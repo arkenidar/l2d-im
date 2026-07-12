@@ -16,6 +16,9 @@ function Shapes.newRectButton(opts)
   function self:draw()
     love.graphics.setColor(self.isRed and 1 or 0, 0, self.isRed and 0 or 1)
     love.graphics.rectangle("fill", self.x, self.y, self.w, self.h)
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", self.x, self.y, self.w, self.h)
   end
 
   function self:bounds()
@@ -51,6 +54,9 @@ function Shapes.newCircleButton(opts)
   function self:draw()
     love.graphics.setColor(0, 0, 1)
     love.graphics.circle("fill", self.cx, self.cy, self:radius())
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.setLineWidth(2)
+    love.graphics.circle("line", self.cx, self.cy, self:radius())
   end
 
   function self:bounds()

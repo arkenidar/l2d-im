@@ -263,10 +263,16 @@ function Viewport:draw(contentFn, backgroundFn)
   local half = HANDLE_SIZE / 2
   love.graphics.setColor(0.9, 0.6, 0.1)
   love.graphics.rectangle("fill", self.x - half, self.y - half, HANDLE_SIZE, HANDLE_SIZE)
+  love.graphics.setColor(0, 0, 0)
+  love.graphics.setLineWidth(2)
+  love.graphics.rectangle("line", self.x - half, self.y - half, HANDLE_SIZE, HANDLE_SIZE)
 
   -- Resize circle handle.
   love.graphics.setColor(0.1, 0.7, 0.9)
   love.graphics.circle("fill", self.x + self.w, self.y + self.h, HANDLE_RADIUS)
+  love.graphics.setColor(0, 0, 0)
+  love.graphics.setLineWidth(2)
+  love.graphics.circle("line", self.x + self.w, self.y + self.h, HANDLE_RADIUS)
 
   love.graphics.setColor(1, 1, 1)
 end
