@@ -17,9 +17,10 @@ local viewports = {} -- { { viewport = <Viewport>, scene = <Scene> }, ... }
 
 -- Active pointer captures: once a press is claimed by a viewport, all
 -- following move/release events of that pointer go only to it.
--- Each capture is { entry = <stack entry>, tentative = <bool> };
--- tentative means the press landed on a transparent empty area and the
--- click (if it stays a click) will be re-dispatched to layers below.
+-- Each capture is { entry = <stack entry>, list = <the stack entry
+-- belongs to>, tentative = <bool> }; tentative means the press landed
+-- on a transparent empty area and the click (if it stays a click) will
+-- be re-dispatched to sibling layers below.
 local mouseCapture = nil
 local touchCaptures = {} -- touch id -> capture
 
@@ -35,7 +36,10 @@ local function drawBackground(w, h)
   love.graphics.draw(image, ix, iy, 0, scale, scale)
 end
 
--- Builds a Viewport + Scene pair and pushes it on top of the stack.
+-- Builds a Viewport + Scene pair and pushes it on top of a stack —
+-- either the root `viewports` list, or (when opts.parent is given) that
+-- viewport's `children`, nesting it inside. A nested child's x, y are
+-- in the parent's content-space, same as everything else drawn there.
 -- opts.blocksInput overrides the input policy explicitly; when nil the
 -- policy follows the visuals: a viewport with a background image is
 -- input-opaque everywhere, one without lets empty areas fall through.
@@ -50,34 +54,77 @@ local function addViewport(x, y, w, h, sceneObjects, useBackground, opts)
   viewport:setHitContent(function(cx, cy)
     return scene:hitTestAt(cx, cy) ~= nil
   end)
-  table.insert(viewports, { viewport = viewport, scene = scene })
+  local entry = { viewport = viewport, scene = scene }
+  local list = (opts and opts.parent and opts.parent.children) or viewports
+  table.insert(list, entry)
+  return entry
 end
 
--- Moves a stack entry to the top (end of the list), like a desktop
--- window raised on click.
-local function bringToFront(entry)
-  for i, e in ipairs(viewports) do
+-- Moves a stack entry to the top (end of its own list — root or a
+-- parent's children), like a desktop window raised on click.
+local function bringToFront(list, entry)
+  for i, e in ipairs(list) do
     if e == entry then
-      table.remove(viewports, i)
-      table.insert(viewports, entry)
+      table.remove(list, i)
+      table.insert(list, entry)
       return
     end
   end
 end
 
--- Walks the stack top-down looking for the first viewport that claims
--- a press at (x, y). Handles claim firmly; body presses claim firmly on
--- content or opaque areas and tentatively on transparent empty areas
--- (the drag pans, but a mere click will be forwarded below on release).
--- Returns the capture record, or nil if nothing claimed the press.
-local function capturePressAt(x, y)
-  for i = #viewports, 1, -1 do
-    local entry = viewports[i]
-    if entry.viewport.dragMode == nil then
-      local kind = entry.viewport:beginDrag(x, y)
+-- Converts a raw screen (x, y) into the coordinate space capture.list
+-- and capture.entry operate in, by applying each ancestor viewport's
+-- toContent in outer-to-inner order. Needed because love.mousemoved /
+-- love.touchmoved always report raw screen coordinates, but a nested
+-- capture's beginDrag/dragTo/etc. were seeded with coordinates already
+-- converted into its parent's (and its parent's parent's, ...)
+-- content-space during capturePressAt's descent.
+local function toLocal(chain, x, y)
+  for _, vp in ipairs(chain) do
+    x, y = vp:toContent(x, y)
+  end
+  return x, y
+end
+
+-- Walks a stack (root or a nested children list) top-down looking for
+-- the first viewport that claims a press at (x, y), descending into a
+-- viewport's own children first so the topmost nested content wins.
+-- Handles claim firmly; body presses claim firmly on content or opaque
+-- areas and tentatively on transparent empty areas (the drag pans, but
+-- a mere click will be forwarded below on release). Returns a capture
+-- record { entry, list, chain, tentative }, or nil if nothing claimed
+-- the press. chain is the list of ancestor viewports (outer to inner)
+-- toLocal must apply to convert future raw screen coordinates into the
+-- space capture.list/capture.entry operate in.
+--
+-- Only the list the capture actually landed in gets reordered — a
+-- nested capture does NOT also raise its ancestors' entries in their
+-- own (outer) lists. Otherwise grabbing a deeply nested child's handle
+-- would raise the whole ancestor chain to the front of the root stack,
+-- swapping which unrelated sibling window paints on top of which.
+-- Note: descending into children is gated on hitBody (children only
+-- ever live, visually and interactively, inside the parent's clipped
+-- body), but the parent's own beginDrag is NOT gated on its own
+-- hitBody — the move/resize handles are centered on the frame corners
+-- and half of each sticks out past the body rectangle, exactly like
+-- the original single-level router relied on.
+local function capturePressAt(list, x, y)
+  for i = #list, 1, -1 do
+    local entry = list[i]
+    local vp = entry.viewport
+    if vp.dragMode == nil then
+      if vp:hitBody(x, y) then
+        local cx, cy = vp:toContent(x, y)
+        local childCapture = capturePressAt(vp.children, cx, cy)
+        if childCapture then
+          table.insert(childCapture.chain, 1, vp)
+          return childCapture
+        end
+      end
+      local kind = vp:beginDrag(x, y)
       if kind then
-        bringToFront(entry)
-        return { entry = entry, tentative = (kind == "pan-transparent") }
+        bringToFront(list, entry)
+        return { entry = entry, list = list, chain = {}, tentative = (kind == "pan-transparent") }
       end
     end
   end
@@ -86,14 +133,17 @@ end
 
 -- Ends a captured pointer gesture at (x, y). If the gesture stayed a
 -- click on a transparent empty area, forwards the click to the topmost
--- viewport below that actually has something there (content or an
--- input-opaque body), raising it — otherwise fires/ends normally.
+-- sibling below (in the same list the capture came from) that actually
+-- has something there (content or an input-opaque body), raising it —
+-- otherwise fires/ends normally. A click that falls through every
+-- sibling of a nested child is not re-tried against the parent's own
+-- siblings; nesting only one level of fall-through keeps this simple.
 local function releaseCapture(capture, x, y)
   local vp = capture.entry.viewport
   if capture.tentative and not vp.dragMoved then
     vp:endDrag()
-    for i = #viewports, 1, -1 do
-      local entry = viewports[i]
+    for i = #capture.list, 1, -1 do
+      local entry = capture.list[i]
       if entry ~= capture.entry then
         local below = entry.viewport
         if below:hitOrigin(x, y) or below:hitResize(x, y) then
@@ -101,7 +151,7 @@ local function releaseCapture(capture, x, y)
         end
         local kind = below:bodyInputKind(x, y)
         if kind == "content" or kind == "opaque" then
-          bringToFront(entry)
+          bringToFront(capture.list, entry)
           below:fireClickAt(x, y)
           return
         end
@@ -113,6 +163,28 @@ local function releaseCapture(capture, x, y)
   end
 end
 
+-- Walks a stack top-down for the topmost viewport under (mx, my) that
+-- should consume a wheel event, descending into children first: either
+-- it has something there (content or an input-opaque body), or it has
+-- overflowing content to scroll. Only a transparent viewport whose
+-- content already fits lets the wheel fall through. Returns true once
+-- consumed.
+local function wheelRoute(list, mx, my, dx, dy)
+  for i = #list, 1, -1 do
+    local vp = list[i].viewport
+    if vp:hitBody(mx, my) then
+      local cx, cy = vp:toContent(mx, my)
+      if wheelRoute(vp.children, cx, cy, dx, dy) then return true end
+      local kind = vp:bodyInputKind(mx, my)
+      if kind == "content" or kind == "opaque" or (kind == "transparent" and vp:canScroll()) then
+        vp:wheelmoved(dx, dy)
+        return true
+      end
+    end
+  end
+  return false
+end
+
 function love.load()
   print("Hello World! debugger test")
 
@@ -122,12 +194,21 @@ function love.load()
   -- Bottom window: opaque photo background, so it blocks all input to
   -- anything below its frame. The two overlapping rects demo scene-level
   -- z: the z = 1 rect draws on top and wins clicks in the overlap.
-  addViewport(ww * 0.05, wh * 0.15, ww * 0.45, wh * 0.6, {
+  local bottom = addViewport(ww * 0.05, wh * 0.15, ww * 0.45, wh * 0.6, {
     Shapes.newRectButton({ x = 100, y = 100, w = 200, h = 150 }),
     Shapes.newRectButton({ x = 200, y = 170, w = 200, h = 150, z = 1 }),
     Shapes.newCircleButton({ cx = 400, cy = 300 }),
     Shapes.newDecorGroup(),
   }, true)
+
+  -- Nested demo: a child viewport living inside the bottom window's
+  -- content space, proving a viewport can host another viewport,
+  -- recursively — it scrolls/clips with its parent and still handles
+  -- its own drag, resize, and input independently.
+  addViewport(10, 10, 150, 110, {
+    Shapes.newRectButton({ x = 15, y = 15, w = 60, h = 40 }),
+    Shapes.newCircleButton({ cx = 100, cy = 60, sizeIndex = 1 }),
+  }, false, { blocksInput = true, parent = bottom.viewport })
 
   -- Top window: no background, overlapping the first one. Its empty
   -- areas are input-transparent — clicks there fall through to the
@@ -143,16 +224,12 @@ function love.update(dt)
 end
 
 function love.draw()
-  for _, entry in ipairs(viewports) do
-    -- Re-render each scene into its own buffer every frame (immediate
-    -- mode, no dirty-flag caching), then let its viewport scroll/clip
-    -- the resulting buffer image over its own background.
-    entry.scene:renderToCanvas()
-    entry.viewport:setContentSize(entry.scene:contentSize())
-    entry.viewport:draw(function()
-      entry.scene:drawContent()
-    end, entry.scene.backgroundFn)
-  end
+  -- Re-renders each scene into its own buffer every frame (immediate
+  -- mode, no dirty-flag caching), then lets its viewport scroll/clip
+  -- the resulting buffer image over its own background — recursing
+  -- into any nested children the same way. Shared with Viewport:draw,
+  -- which uses it for a viewport's own children.
+  Viewport.drawStack(viewports)
 end
 
 function love.keypressed(key)
@@ -180,18 +257,20 @@ end
 
 function love.mousepressed(x, y, button)
   if button ~= 1 or mouseCapture then return end
-  mouseCapture = capturePressAt(x, y)
+  mouseCapture = capturePressAt(viewports, x, y)
 end
 
 function love.mousemoved(x, y, dx, dy)
   if mouseCapture then
-    mouseCapture.entry.viewport:dragTo(x, y)
+    local lx, ly = toLocal(mouseCapture.chain, x, y)
+    mouseCapture.entry.viewport:dragTo(lx, ly)
   end
 end
 
 function love.mousereleased(x, y, button)
   if button ~= 1 or not mouseCapture then return end
-  releaseCapture(mouseCapture, x, y)
+  local lx, ly = toLocal(mouseCapture.chain, x, y)
+  releaseCapture(mouseCapture, lx, ly)
   mouseCapture = nil
 end
 
@@ -201,34 +280,29 @@ end
 -- fits lets the wheel fall through to the layers below.
 function love.wheelmoved(dx, dy)
   local mx, my = love.mouse.getPosition()
-  for i = #viewports, 1, -1 do
-    local vp = viewports[i].viewport
-    local kind = vp:bodyInputKind(mx, my)
-    if kind == "content" or kind == "opaque" or (kind == "transparent" and vp:canScroll()) then
-      vp:wheelmoved(dx, dy)
-      return
-    end
-  end
+  wheelRoute(viewports, mx, my, dx, dy)
 end
 
 -- Touch mirrors the mouse path, with an independent capture per touch
 -- id (a viewport already mid-gesture won't be claimed twice, thanks to
 -- the dragMode guard in capturePressAt).
 function love.touchpressed(id, x, y)
-  touchCaptures[id] = capturePressAt(x, y)
+  touchCaptures[id] = capturePressAt(viewports, x, y)
 end
 
 function love.touchmoved(id, x, y, dx, dy)
   local capture = touchCaptures[id]
   if capture then
-    capture.entry.viewport:dragTo(x, y)
+    local lx, ly = toLocal(capture.chain, x, y)
+    capture.entry.viewport:dragTo(lx, ly)
   end
 end
 
 function love.touchreleased(id, x, y)
   local capture = touchCaptures[id]
   if capture then
-    releaseCapture(capture, x, y)
+    local lx, ly = toLocal(capture.chain, x, y)
+    releaseCapture(capture, lx, ly)
     touchCaptures[id] = nil
   end
 end

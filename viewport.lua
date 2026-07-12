@@ -34,6 +34,11 @@ function Viewport.new(x, y, w, h, opts)
   self.dragStartX, self.dragStartY = 0, 0
   self.dragMoved = false
   self.onClick = nil -- fn(contentX, contentY), called on a body click (no drag)
+  -- Nested child viewports, in the same { viewport, scene } shape and
+  -- bottom->top z order as the root stack in main.lua. A child's x/y
+  -- are expressed in this viewport's content-space (i.e. what
+  -- toContent() produces), not absolute screen coordinates.
+  self.children = {}
   return self
 end
 
@@ -210,12 +215,34 @@ function Viewport:wheelmoved(dx, dy)
   self:clampScroll()
 end
 
+-- Re-renders every { viewport, scene } entry's scene and draws it,
+-- bottom -> top. Shared by main.lua for the root stack and by draw()
+-- above for a viewport's nested children, so both draw identically.
+function Viewport.drawStack(entries)
+  for _, entry in ipairs(entries) do
+    entry.scene:renderToCanvas()
+    entry.viewport:setContentSize(entry.scene:contentSize())
+    entry.viewport:draw(function()
+      entry.scene:drawContent()
+    end, entry.scene.backgroundFn)
+  end
+end
+
 -- contentFn(w, h) is clipped to the viewport and scrolls with it.
 -- backgroundFn(w, h), if given, is clipped to the viewport but stays
 -- fixed relative to its origin regardless of scroll.
+--
+-- Scissor rectangles in LÖVE are always in absolute screen pixels,
+-- ignoring the current transform, so self.x/self.y (which may already
+-- be inside an ancestor viewport's translated content-space) are
+-- converted with transformPoint first. intersectScissor (not
+-- setScissor) composes with any clip an ancestor viewport already
+-- applied, and push/pop "all" restores that ancestor clip afterwards
+-- instead of clearing it.
 function Viewport:draw(contentFn, backgroundFn)
-  love.graphics.push()
-  love.graphics.setScissor(self.x, self.y, self.w, self.h)
+  love.graphics.push("all")
+  local sx, sy = love.graphics.transformPoint(self.x, self.y)
+  love.graphics.intersectScissor(sx, sy, self.w, self.h)
   love.graphics.translate(self.x, self.y)
 
   if backgroundFn then
@@ -224,9 +251,9 @@ function Viewport:draw(contentFn, backgroundFn)
 
   love.graphics.translate(-self.scrollX, -self.scrollY)
   contentFn(self.w, self.h)
+  Viewport.drawStack(self.children)
 
   love.graphics.pop()
-  love.graphics.setScissor()
 
   -- Frame border.
   love.graphics.setColor(1, 1, 1)
