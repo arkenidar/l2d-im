@@ -4,12 +4,14 @@
 --
 -- Every shape exposes the generic per-drawable protocol used by
 -- Scene: :draw() and :bounds() (required), plus optional
--- :hitTest(px, py) / :onClick() if it should react to clicks.
+-- :hitTest(px, py) / :onClick() if it should react to clicks, and an
+-- optional numeric z (default 0) controlling paint order within the
+-- scene — higher z draws on top and is hit-tested first.
 local Shapes = {}
 
 -- Single shape, clickable: toggles red/blue.
 function Shapes.newRectButton(opts)
-  local self = { x = opts.x, y = opts.y, w = opts.w, h = opts.h, isRed = true }
+  local self = { x = opts.x, y = opts.y, w = opts.w, h = opts.h, z = opts.z, isRed = true }
 
   function self:draw()
     love.graphics.setColor(self.isRed and 1 or 0, 0, self.isRed and 0 or 1)
@@ -37,6 +39,7 @@ function Shapes.newCircleButton(opts)
   local self = {
     cx = opts.cx,
     cy = opts.cy,
+    z = opts.z,
     sizes = opts.sizes or { 30, 50, 70 },
     sizeIndex = opts.sizeIndex or 2,
   }
@@ -61,6 +64,31 @@ function Shapes.newCircleButton(opts)
 
   function self:onClick()
     self.sizeIndex = (self.sizeIndex % #self.sizes) + 1
+  end
+
+  return self
+end
+
+-- Inert full-area cover: draws a translucent tint over a region and
+-- hit-tests it without doing anything on click. Placed at a low z under
+-- a scene's interactive shapes, it makes that whole region "content"
+-- for input purposes — clicks, drags, and wheel over it stop at this
+-- scene instead of falling through to viewports stacked below.
+function Shapes.newCoverRect(opts)
+  local self = { x = opts.x or 0, y = opts.y or 0, w = opts.w, h = opts.h, z = opts.z or -1 }
+
+  function self:draw()
+    love.graphics.setColor(opts.color or { 0.15, 0.15, 0.2, 0.6 })
+    love.graphics.rectangle("fill", self.x, self.y, self.w, self.h)
+  end
+
+  function self:bounds()
+    return self.x + self.w, self.y + self.h
+  end
+
+  function self:hitTest(px, py)
+    return px >= self.x and px <= self.x + self.w
+      and py >= self.y and py <= self.y + self.h
   end
 
   return self
