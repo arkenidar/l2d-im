@@ -270,6 +270,12 @@ end
 function love.mousereleased(x, y, button)
   if button ~= 1 or not mouseCapture then return end
   local lx, ly = toLocal(mouseCapture.chain, x, y)
+  -- Sync one last time at the release position before ending the
+  -- gesture: mousemoved isn't guaranteed to have delivered an event at
+  -- this exact spot (a fast flick can release before/without a
+  -- matching motion sample), which would otherwise leave the drag
+  -- visibly frozen short of where the pointer actually ended up.
+  mouseCapture.entry.viewport:dragTo(lx, ly)
   releaseCapture(mouseCapture, lx, ly)
   mouseCapture = nil
 end
@@ -302,6 +308,9 @@ function love.touchreleased(id, x, y)
   local capture = touchCaptures[id]
   if capture then
     local lx, ly = toLocal(capture.chain, x, y)
+    -- See love.mousereleased: sync at the release position first, in
+    -- case no touchmoved landed exactly there.
+    capture.entry.viewport:dragTo(lx, ly)
     releaseCapture(capture, lx, ly)
     touchCaptures[id] = nil
   end
