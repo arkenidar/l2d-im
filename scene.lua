@@ -45,6 +45,14 @@ end
 -- added/removed objects just work (object counts are tiny).
 function Scene:renderToCanvas()
   self:rebuildDrawOrder()
+  -- Render in a clean coordinate space: setCanvas does NOT reset the
+  -- current transform or scissor, so a nested scene rendered mid-frame
+  -- (inside its parent's translated, scissored content pass) would
+  -- otherwise bake the parent's offset into the canvas and clip
+  -- against the parent's screen-space scissor.
+  love.graphics.push("all")
+  love.graphics.origin()
+  love.graphics.setScissor()
   love.graphics.setCanvas({ self.canvas, stencil = false })
   love.graphics.clear(0, 0, 0, 0)
   self.maxX, self.maxY = 0, 0
@@ -55,6 +63,7 @@ function Scene:renderToCanvas()
     self.maxY = math.max(self.maxY, y2)
   end
   love.graphics.setCanvas()
+  love.graphics.pop()
 end
 
 function Scene:contentSize()
