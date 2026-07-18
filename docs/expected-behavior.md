@@ -66,6 +66,11 @@ over its own empty margins.
   gate for deciding whether to descend into a viewport's *children* —
   children only ever live inside the parent's clipped body — but it
   must not also gate the parent's own handle check.)
+- A viewport's own handles (move *and* resize) are drawn **on top of**
+  its children (`draw()` paints them after the clipped body), so a
+  press on one of them takes priority over the children: it must NOT
+  descend into the children list, or a child handle underneath would
+  steal the press from the parent handle visually covering it.
 
 ## Nesting
 

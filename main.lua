@@ -108,12 +108,18 @@ end
 -- hitBody — the move/resize handles are centered on the frame corners
 -- and half of each sticks out past the body rectangle, exactly like
 -- the original single-level router relied on.
+--
+-- A viewport's own handles are drawn on top of its children (draw()
+-- paints them after the clipped body), so a press on one of its own
+-- handles must NOT descend into children — otherwise a child handle
+-- underneath would steal the press from the parent handle covering it.
 local function capturePressAt(list, x, y)
   for i = #list, 1, -1 do
     local entry = list[i]
     local vp = entry.viewport
     if vp.dragMode == nil then
-      if vp:hitBody(x, y) then
+      local onOwnHandle = vp:hitOrigin(x, y) or vp:hitResize(x, y)
+      if not onOwnHandle and vp:hitBody(x, y) then
         local cx, cy = vp:toContent(x, y)
         local childCapture = capturePressAt(vp.children, cx, cy)
         if childCapture then
